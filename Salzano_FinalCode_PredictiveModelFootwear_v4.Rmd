@@ -1,0 +1,721 @@
+---
+title: 'Footwear Satisfaction Predictive Models'
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE, tidy = TRUE)
+```
+
+#### Set-up
+
+This document provides the code and output for building the predictive model that seeks to determine if the mechanical properties of shoes can predict overall satisfaction.
+
+The following packages need to be loaded:
+
+* "caret"
+* "glmnet"
+* "randomForest"
+* "ordinalForest"
+* "ranger"
+* "e1071"
+* "readxl"
+* "tidyverse"
+* "ggplot2"
+* "EnvStats"
+* "car"
+* "MASS"
+* "psych"
+* "lattice"
+* "Hmisc"
+* "janitor"
+* "dplyr"
+* "ggcorrplot"  
+
+```{r set-up, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+#Load packages and fonts
+pack = c("caret", "readxl", "tidyverse", "ggplot2", "EnvStats", "car", 
+         "MASS", "psych", "dplyr", "ordinalForest", "randomForest",
+         "e1071","ranger", "ggcorrplot", "Hmisc", "janitor", "lattice", 
+         "glmnet", "ggpubr")
+lapply( pack, require, character.only = TRUE)
+library(extrafont)
+#font_import()
+loadfonts(device = "win", quiet = TRUE)
+
+#Set working folder
+setwd("C:/Users/msalzano/OneDrive - University of Massachusetts/UMass/Brooks/ISB-FBG")
+workingfolder = getwd()
+filepath = "C:/Users/msalzano/OneDrive - University of Massachusetts/UMass/Brooks/BigCush/BigCush_MechPcpnData.xlsx"
+```
+
+#### Data Manipulation
+
+This section loads and then manipulates the data.  Data used in this study are part of a larger database, so variables of interest need to be extracted.  The dataset is subsetted into 3 smaller datasets, each one a grouping of similar variables: mechanical properties ("Mech"), perceptual ratings ("Pcpn"), and subject characteristics ("Subj").  The dataset also contains missing data, either in the form of "NA" or placeholder values (e.g. -999). Placeholder values need to be transformed into NAs.
+
+First, load the full dataset.  Since the dataset is large, only dimensions are given.  Then, pull relevant variables from that dataset to create a smaller dataset.
+
+```{r load data, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+#Load data
+BigCushMP = as.data.frame(read_excel(filepath))
+paste("Original Dataset:", dim(BigCushMP)[1], " x ", dim(BigCushMP)[2])
+
+#Subset out columns of interest
+subBigCushMP = BigCushMP[,c(1,2,3,4,10,17,21,27,33,35,45:47,50:52,
+                            55:57,60,63,66,69:71,84:93, 95:99)]
+names(subBigCushMP)
+```
+
+
+#### Perception ratings dataset
+
+Next, create the perceptual ratings dataset.  Note that while this study only focused on overall perception, all perceptual variables were included so that this code could easily be adapted.  Participants were asked to rate the forefoot cushioning (Forefoot or FF), heel cushioning (Heel), flexibility, energy return (ER), transition, stability, and overall satisfaction (Overall).  All variables were rated on a 7-point Likert scale, with 1 = strongly dissatisfied, 4 = neutral, and 7 = strongly satisfied.  Participants were also asked if the liked the forefoot cushioning, heel cushioning, and flexibility (Yes/No/Unsure). Participants were also asked if they would buy the shoe (OverallBuy & OverallYN; Yes/No/Unsure).  Original coding of these questions were as follows: 1 = Yes, 2 = No, 3 = Unsure.  Participants were not asked if they liked the ER, transition, or stability.
+
+```{r create dataset for perceptual data, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+#create perception dataset
+Pcpn = subBigCushMP[,c(11:25)] 
+
+#get rid of the spaces in variable names
+names(Pcpn) = gsub(" ", "", names(Pcpn), fixed = FALSE)
+paste("Pcpn Dataset:", dim(Pcpn)[1], " x ", dim(Pcpn)[2])
+str(Pcpn)
+```
+  
+Now, the perception data needs to be manipulated.  The 7-point Likert scale data need to be converted into ordered, categorical data.  The Yes/No/Unsure data also need to be re-coded so that 1 = Yes and 0 = No ("unsure" answers are converted to NAs), which are then converted to categorical data.  We are also creating a new variable called "Satisfied" which is based off of answers from the overall satisfaction 7-point Likert scores.  Here, we collapsed all dissatisfied answers (1-3) into a general dissatisfied score (coded as 1) and all satisfied answers (5-7) to a general satisfied score (coded as 3), with all neutral (4) answers re-coded as 2.  This "Satisfied" variable is then converted to an ordered, categorical variable.    
+
+``` {r manipulate perceptual data, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+for (i in 1:nrow(Pcpn)) {
+  
+  if (Pcpn$Overall[i] < 4) {
+    Pcpn$Satisfied[i] = 1} else if (Pcpn$Overall[i] > 4) {
+      Pcpn$Satisfied[i] = 3} else if (Pcpn$Overall[i] == 4) {
+        Pcpn$Satisfied[i] = 2
+      }
+  
+  if (Pcpn$ForefootLike[i] == "Yes") {
+    Pcpn$FFYN[i] = 1} else if (Pcpn$ForefootLike[i] == "No") {
+      Pcpn$FFYN[i] = 0} else {
+        Pcpn$FFYN[i] = NA}
+  
+  if (Pcpn$HeelLike[i] == "Yes") {
+    Pcpn$HeelYN[i] = 1} else if (Pcpn$HeelLike[i] == "No") {
+      Pcpn$HeelYN[i] = 0} else {
+        Pcpn$HeelYN[i]= NA}
+  
+  if (Pcpn$FlexibilityLike[i] == "Yes") {
+    Pcpn$FlexibilityYN[i] = 1} else if (Pcpn$FlexibilityLike[i] == "No") {
+      Pcpn$FlexibilityYN[i] = 0} else {
+        Pcpn$FlexibilityYN[i] = NA}
+  
+  if (Pcpn$OverallBuy[i] == "Yes") {
+    Pcpn$OverallYN[i] = 1} else if (Pcpn$OverallBuy[i] == "No") {
+      Pcpn$OverallYN[i] = 0} else {
+        Pcpn$OverallYN[i] = NA}
+  
+  }
+  
+Pcpn$Satisfied = factor(Pcpn$Satisfied, 
+                        levels = c("1","2","3"), 
+                        ordered = TRUE)
+Pcpn$Overall = factor(Pcpn$Overall,
+                      levels = c("1", "2", "3", "4", "5", "6", "7"), 
+                      ordered = TRUE) 
+Pcpn$FFYN = factor(as.numeric(Pcpn$FFYN))
+Pcpn$HeelYN = factor(as.numeric(Pcpn$HeelYN))
+Pcpn$FlexibilityYN = factor(as.numeric(Pcpn$FlexibilityYN))
+Pcpn$OverallYN = factor(as.numeric(Pcpn$OverallYN))
+
+Pcpn = Pcpn[,-c(2,5,8,14)]
+str(Pcpn)
+```
+
+
+#### Mechanical properties dataset
+
+The shoe mechanical properties dataset is the next to be created.  The variable names have spaces, which need to be removed. Some of the shoes with missing values are coded with "-999" and need to be changed to NAs. 
+
+
+```{r, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+Mech = subBigCushMP[,c(3,26:40)]
+
+#get rid of spaces in variable names
+names(Mech) = gsub(" ", "", names(Mech), fixed = FALSE)
+Mech[,1] = factor(Mech[,1])
+names(Mech)[1] = 'StabilityShoe'
+
+VarUnits = c(
+             'Asker C', 'Asker C',  '%', '%', 
+             'g', 'g', 'ms', 'ms',
+             'm/s', 'm/s','mm', 'mm', 
+             'Nm/rad','grams')
+
+VarLabels = c(
+              'Heel Duro','FF Duro','Heel ER','FF ER',
+              'Heel Gmax','FF Gmax','Heel TTP','FF TTP',
+              'Heel LR','FF LR', 'Heel Stack','FF Stack',
+            'Flex','Weight')
+
+plot_theme =   theme(
+  text = element_text(family = "Times New Roman", face = "bold"),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.background = element_blank(),
+  plot.title = element_text(
+    face = "bold", size = 12, color = "black", hjust = 0.5),
+  axis.text.x = element_blank(),
+  axis.title.x = element_text(
+    face = "bold", size = 12, color = "black"),
+  axis.title.y = element_text(
+    face = "bold", size = 12, color = "black"),
+  axis.text.y = element_text(
+    face = "bold", size = 10, color = "black"),
+  legend.title = element_text(
+    face = "bold", size = 12, color = "black"),
+  legend.text = element_text(
+    face = "bold", size = 10, color = "black"),
+  legend.position = "none")
+
+VarPlot = list()
+
+for (i in 2:ncol(Mech)) {
+    
+    Mech[,i] = as.numeric(Mech[,i])
+    tmpErr = which(Mech[,i] < 0)
+    Mech[tmpErr,i] = NA
+    
+}
+
+### need to convert Flex values to rotational stiffness
+Mech$Flexvalue = Mech$Flexvalue*0.0971
+
+#creating temporary Mech dataframe to reorder columns for plots
+tempMech = Mech[,c(1,6,7,9,10,11,12,13,14,15,16,3,4,8,2)]
+```
+
+Look for outliers in Mech properties. Only removing for logistic regression - not for random forest.  
+
+```{r outlier examination, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+
+FFGoutlier = rosnerTest(
+  Mech$`FFG-Max`[!duplicated(BigCushMP$`Full shoe name`)],k = 1)
+FFGoutlierLoc = which(Mech$`FFG-Max` == FFGoutlier$all.stats$Value)
+
+FFSoutlier = rosnerTest(
+  Mech$FFStack[!duplicated(BigCushMP$`Full shoe name`)],k = 1)
+FFSoutlierLoc = which(Mech$FFStack == FFSoutlier$all.stats$Value)
+
+FFLRoutlier = rosnerTest(
+  Mech$FFLoadingRate[!duplicated(BigCushMP$`Full shoe name`)],k = 1)
+FFLRoutlierLoc  = which(Mech$FFLoadingRate == FFLRoutlier$all.stats$Value)
+
+MechOutlierLoc = c(FFSoutlierLoc,FFGoutlierLoc,FFLRoutlierLoc)
+MechOutlierLoc = MechOutlierLoc[!duplicated(MechOutlierLoc)]
+
+```
+
+Now, a correlation matrix needs to be created to check for highly correlated variables.
+
+```{r correlation matrix,echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+#changing labels of columns for ggcorrplot
+Mech.mod.label = tempMech
+names(Mech.mod.label)[-1] = VarLabels
+
+cormat.Mech = round(cor(
+  Mech.mod.label[(!duplicated(BigCushMP$`Full shoe name`)),-1], 
+  use="complete.obs"),2)
+
+CorMechPlot = ggcorrplot(
+  cormat.Mech, lab = TRUE, 
+  lab_size = 2.5, 
+  lab_col = 'black', 
+  show.legend = TRUE, 
+  type = "upper", 
+  digits = 2) + 
+  plot_theme + 
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(
+          face = "bold", size = 10, color = "black", angle = 90), 
+        panel.grid.major = element_line(
+          color = "black", size = 0.1), 
+        legend.position = 'right', 
+        legend.title = element_blank())
+
+print(CorMechPlot)
+ggsave(CorMechPlot, filename = paste0(workingfolder, '/ReportPlots/CorMechPlot.png'), width = 6, height = 5 )
+
+```
+
+
+#### Subject characteristics dataset
+Finally, the dataset for the subject characteristics needs to be created.  The variables here are: subject ID, sex, body mass (kg), age (yr), and height (m).  The coding for sex originally has female coded as a 2, so this is changed to be coded as 0.  Missing values for body mass, height, and age are coded as either -999 or 1, which need to be converted to NAs.  
+
+``` {r examine subject characteristics, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+#create subject characteristics dataset
+Subj = subBigCushMP[,c(6:10)]
+names(Subj) = c("ID", "Sex", "BodyMass", "Age", "Height")
+
+Subj$Sex[which(Subj$Sex == 2)] = 0 #Female == 2, changing to 0
+Subj$Sex = factor(Subj$Sex)
+Subj$ID = factor(Subj$ID)
+Subj$BodyMass = as.numeric(Subj$BodyMass)
+
+for (i in 3:5) {
+  
+  tmpErr = which(Subj[,i] < 1)
+  Subj[tmpErr, i] = NA
+  
+}
+
+Subj$ID[842] = 148 #subject ID was blank
+
+```
+
+Finding outliers in subject characteristics.
+```{r Subj outliers,echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+tempSubj = Subj[!duplicated(Subj$ID),]
+BodyMassOutlier = rosnerTest(tempSubj$BodyMass, k = 1)
+
+IDoutlierBM = tempSubj$ID[which(
+  tempSubj$BodyMass == BodyMassOutlier$all.stats$Value)]
+BMoutlierLoc = which(Subj$ID == IDoutlierBM)
+```
+
+
+#### Model Set-up
+
+The mechanical properties data and subject characteristics data are then combined to form a dataset of predictors.  For each model, these are then combined with the outcome variable of interest.  Although this paper is focused on how mechanical properties influence satisfaction, subject characteristics are included as covariates to capture any influence they may have. All models will use the same 10 repeats of 5-fold cross-validation.
+
+The three models being built are using the following outcome variables:
+
+Model 1. Satisfaction rating on a 7 point Likert scale (aka "Degree of Satisfaction" or "DS")
+Model 2. Satisfaction rating transformed to a 3 point scale (aka "Overall Satisfaction" or "OS")
+Model 3. Whether or not the subject would be willing to purchase (WtP) the shoe (Y/N)
+
+
+The subject, mechanical properties, and perception datasets need to have the outliers removed for the logistic regression
+``` {r, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+#removing Drop, ID, and Height as predictors
+RF.mech.drop = which(names(Mech) %in% c("Drop", "HeelTimetoPeak","FFTimetoPeak","HeelLoadingRate","FFLoadingRate"))
+RF.subj.drop = which(names(Subj) %in% c("ID", "Height"))
+
+RF.MechPredictorData = cbind(Mech[,-RF.mech.drop],Subj[,-RF.subj.drop])
+
+#removing outliers and then Drop, ID, & Height for logistic regression
+PredictorOutlierLoc = c(BMoutlierLoc, MechOutlierLoc)
+
+newSubj = Subj[-PredictorOutlierLoc,]
+newMech = Mech[-PredictorOutlierLoc,]
+newPcpn = Pcpn[-PredictorOutlierLoc,]
+
+LR.mech.drop = which(names(newMech) %in% c("Drop"))
+LR.subj.drop = which(names(newSubj) %in% c("ID", "Height"))
+
+LR.MechPredictorData = cbind(newMech[,-LR.mech.drop], newSubj[,-LR.subj.drop])
+
+#perception data is not missing any data so not included in the code below
+RF.MechPred.noNAs = complete.cases(RF.MechPredictorData)
+LR.MechPred.noNAs = complete.cases(LR.MechPredictorData)
+
+```
+
+Set up cross-validation procedures, hyperparameter tuning, and test/train splits for random forest.  
+``` {r, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+def_mtry_mech = floor(sqrt(ncol(RF.MechPredictorData)))
+
+tunePred = ncol(RF.MechPredictorData)/2
+
+#tuning grid for regular random forest
+RFgrid = expand.grid(mtry = c(1:tunePred))
+
+#tuning grid for ordinal forest
+ORFgrid = expand.grid(nsets = 1000, 
+                      ntreeperdiv = 100, 
+                      ntreefinal = c(1000, 2000, 3000, 4000, 5000))
+
+#cross-validation protocol
+modControl = trainControl(method = "repeatedcv", number = 5, repeats = 10)
+
+set.seed(123)
+
+#create test/train samples for random forest models
+RF.train.samples = subBigCushMP$`Shoe Name NUM`[RF.MechPred.noNAs] %>%
+  createDataPartition(p = 0.8, list = FALSE)
+
+#need to remove shoes associated with outliers before creating test/train
+tmpShoe = subBigCushMP$`Shoe Name NUM`[-PredictorOutlierLoc]
+
+#create test/train samples for logistic regression models
+LR.train.samples = tmpShoe[LR.MechPred.noNAs] %>% 
+  createDataPartition(p = 0.8, list = FALSE)
+
+```
+
+#### Distribution Plots
+Before building the models, we also want to view the distribution of mechanical properties, subject characteristics, and satisfaction scores across shoes and shoe brands.  
+
+First, we'll create violin plots for mechanical properties.
+
+```{r Mech plots, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+#isolate shoes without NAs - need shoe name as well
+#using RF version of no NAs to include outliers
+Mech.noNA = cbind(tempMech, 
+                  subBigCushMP$`Full shoe name`)[RF.MechPred.noNAs,] 
+names(Mech.noNA)[ncol(Mech.noNA)] = 'FullShoeName'
+
+#create function to build violin plots
+viol_plot_fn = function(mydata, column) {
+  
+  ggplot(data = mydata, aes(x = factor(1), y = mydata[,column])) +
+  geom_violin(trim = FALSE, fill = "white") +
+    stat_summary(fun=mean, geom="point", shape =1, size=3, color="black") +
+    stat_summary(fun=median, geom="point", shape=3, size=2, color = "black")+
+   plot_theme #+
+}
+
+#create violin plots for each mechanical property - ignoring shoe duplicates
+VarPlotViolin = lapply(
+  colnames(Mech.noNA[(!duplicated(Mech.noNA$FullShoeName)),-c(1,16)]),
+  viol_plot_fn, mydata = Mech.noNA)
+
+for (i in 1:length(VarPlotViolin)){
+  
+  VarPlotViolin[[i]] = VarPlotViolin[[i]] + 
+    labs(y = VarUnits[i], x = VarLabels[i] )
+  
+}
+
+#Create bar plot to show stability vs. neutral shoe counts
+VarPlotViolin[[(length(VarPlotViolin)+1)]] =
+  ggplot(Mech.noNA[(!duplicated(Mech.noNA$FullShoeName)),], 
+         aes(x = StabilityShoe, fill = StabilityShoe)) +
+  geom_bar(stat = "count", color = c('black', 'black')) + 
+  scale_x_discrete(breaks = c(0, 1), labels = c("N", "S")) +
+  scale_fill_manual(values = c("black", "white")) +
+  plot_theme + 
+  theme(axis.text.x = element_text(
+    face = "bold", size = 12, color = "black"),
+    axis.title.x = element_blank())
+
+MechViolin = ggarrange(plotlist = VarPlotViolin, ncol = 4, nrow = 4)
+print(MechViolin)
+ggsave(filename = paste0(workingfolder, '/ReportPlots/MechProperties.png'), plot = MechViolin, width = 6, height = 6)
+
+```
+
+Next we'll plot the distribution of subject characteristics.
+
+```{r Subj plots, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+#using RF version of no NAs to include outliers
+Subj.noNA = Subj[RF.MechPred.noNAs,] 
+tempSubj = Subj.noNA[!duplicated(Subj.noNA$ID),]
+
+sex.bar = ggplot(tempSubj, aes(x = Sex, fill = Sex)) + 
+  geom_bar(stat = "count", color = c('black','black')) + 
+  scale_x_discrete(breaks = c(0, 1), labels = c("Female", "Male")) +
+  plot_theme + 
+  scale_fill_manual(values = c("black", "white"))+ 
+  theme(legend.position = "none",
+        axis.text.x = element_text(
+          face = "bold", size = 10, color = "black"))
+
+age.viol = viol_plot_fn(mydata = tempSubj, column = "Age") + 
+  labs(x = "Age", y = "years")
+mass.viol = viol_plot_fn(mydata = tempSubj, column = "BodyMass") + 
+  labs(x = "Body Mass", y = "kg")
+hgt.viol = viol_plot_fn(mydata = tempSubj, column = "Height") + 
+  labs(x = "Height", y = "m")
+
+
+print(ggarrange(sex.bar, age.viol, mass.viol, hgt.viol, ncol = 2, nrow = 2))
+
+ggsave(ggarrange(sex.bar, age.viol, mass.viol, hgt.viol, ncol = 2, nrow = 2), filename = paste0(workingfolder, '/ReportPlots/SubjViolinPlots.png'), width = 3, height = 3)
+
+```
+
+Finally, we'll create plots to show the distribution of satisfaction scores.  Here, we're showing the distribution by plotting the percentage of subjects who noted they were either satisfied with the shoe (score of 5 or higher on 7 point Likert scale) or said "Yes" to if they'd be willing to purchase the shoe.  Note, only two plots shown because scores of 5 or higher on 7 point Likert scale are equal to scores of 3 on the transformed 3 point scale.
+
+``` {r Pcpn plots set-up, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+
+Pcpn = cbind(Pcpn, BigCushMP$`Full shoe name`)
+names(Pcpn)[length(Pcpn)] = 'FullShoeName'
+Pcpn = cbind(Pcpn, BigCushMP$'Brand')
+names(Pcpn)[length(Pcpn)] = 'Brand'
+Pcpn$Brand[which(Pcpn$Brand == 'New Balance')] = 'N.B.'
+
+Pcpn.noNA = Pcpn[RF.MechPred.noNAs,]
+unqShoe = unique(Pcpn.noNA$FullShoeName)
+unqShoeBrand = unique(Pcpn.noNA$Brand)
+
+ShoeNameBrand = Pcpn.noNA[(!duplicated(Pcpn.noNA$FullShoeName)),
+                          c((ncol(Pcpn)-1),(ncol(Pcpn)))]
+
+#install.packages("janitor")
+ShoeYNcounts = data.frame(janitor::tabyl(Pcpn.noNA, FullShoeName, OverallYN))
+ShoeYNcounts$PercentYes = round(
+  100*(ShoeYNcounts$X1/(ShoeYNcounts$X0 + ShoeYNcounts$X1)), 
+  digits = 1)
+ShoeYNcounts = cbind(
+  ShoeYNcounts, ShoeNameBrand[order(ShoeNameBrand$Brand),-1])
+
+ShoeSatisfaction = data.frame(
+  janitor::tabyl(Pcpn.noNA, FullShoeName, Satisfied))
+ShoeSatisfaction$PctSatisfied = round(
+  100*(ShoeSatisfaction$X3/(
+    ShoeSatisfaction$X1 + ShoeSatisfaction$X2 + ShoeSatisfaction$X3)), 
+  digits = 1)
+ShoeSatisfaction = cbind(
+  ShoeSatisfaction, ShoeNameBrand[order(ShoeNameBrand$Brand),-1])
+names(ShoeSatisfaction)[ncol(ShoeSatisfaction)] = 'Brand'
+
+BrandYNcounts = data.frame(janitor::tabyl(Pcpn.noNA, Brand, OverallYN))
+BrandYNcounts$PercentYes = round(
+  100*(BrandYNcounts$X1/(BrandYNcounts$X0 + BrandYNcounts$X1)), 
+  digits = 1)
+
+BrandSatisfaction = data.frame(janitor::tabyl(Pcpn.noNA, Brand, Satisfied))
+BrandSatisfaction$PctSatisfied = round(
+  100*(BrandSatisfaction$X3/(
+    BrandSatisfaction$X1 + BrandSatisfaction$X2 + BrandSatisfaction$X3)), 
+  digits = 1)
+
+counts = paste0('(n = ', summary(factor(sort(ShoeNameBrand$Brand))), ')')
+tmpXLabel = paste(sort(unqShoeBrand), '\n', counts)
+
+
+unknownBrand = ShoeSatisfaction$Brand
+unknownBrand2 = BrandSatisfaction$Brand
+for (i in 1:length(unqShoeBrand)) {
+  
+  unknownBrand[which(unknownBrand == unqShoeBrand[i])] = paste("Brand", i)
+  unknownBrand2[which(unknownBrand2 == unqShoeBrand[i])] = paste("Brand", i)
+}
+
+
+counts = paste0('(n = ', summary(factor(sort(unknownBrand))), ')')
+tmpXLabel = paste(sort(unknownBrand2), '\n', counts)
+counts2 = paste0('(n = ', summary(factor(sort(unknownBrand))), ')')
+tmpXLabel2 = paste(sort(unknownBrand2), '\n', counts)
+ShoeSatisfaction = cbind(ShoeSatisfaction, unknownBrand)
+BrandSatisfaction = cbind(BrandSatisfaction, unknownBrand2)
+ShoeYNcounts = cbind(ShoeYNcounts, unknownBrand)
+BrandYNcounts = cbind(BrandYNcounts, unknownBrand2)
+
+meanBrandYN = aggregate(
+  ShoeYNcounts$PercentYes, 
+  list(ShoeYNcounts$unknownBrand), 
+  mean)
+meanBrandSatisfaction = aggregate(
+  ShoeSatisfaction$PctSatisfied, 
+  list(ShoeSatisfaction$unknownBrand), 
+  mean)
+names(meanBrandYN) = c('Brand', 'PctYN')
+names(meanBrandSatisfaction) = c('Brand', 'PctSatisfied')
+```
+
+```{r Pcpn plots,  echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+
+ShoeOVR = 
+ggplot(ShoeSatisfaction, aes(x = unknownBrand, y = PctSatisfied))+
+  geom_point(shape = 20, size = 2, color = 'black', fill = 'white') + 
+  geom_point(data = meanBrandSatisfaction, 
+             aes(x = Brand, y = PctSatisfied), 
+             shape = 95, color = "black", 
+             size = 8, stroke = 1, alpha = 0.5) + 
+  plot_theme + 
+  theme(axis.title.x = element_blank(), 
+        axis.text.x =element_text(
+          face = "bold", size = 10, color = "black")) + 
+  geom_vline(xintercept = factor(0), linetype =1) + 
+  scale_x_discrete(labels = tmpXLabel) + 
+  labs(y = 'Percent of Subjects Satisfied (%)')
+
+ggsave(filename = paste0(workingfolder, '/ReportPlots/ShoeOVR2.png'), plot = ShoeOVR, width = 6, height = 3)
+
+ShoeYN =
+ggplot(ShoeYNcounts, aes(x = unknownBrand, y = PercentYes))+
+  geom_point(shape = 20, size = 2, color = 'black', fill = 'white') + 
+  geom_point(data = meanBrandYN, 
+             aes(x = Brand, y = PctYN), 
+             shape = 95, color = "black",
+             size = 8,  stroke = 1, alpha = 0.5) + 
+  plot_theme + 
+  theme(axis.title.x = element_blank(), 
+        axis.text.x =element_text(
+          face = "bold", size = 10, color = "black")) +
+  geom_vline(xintercept = 0, linetype = 1) + 
+  scale_x_discrete(labels = tmpXLabel2) + 
+  labs(y = 'Percent of "Yes" Responses (%)')
+
+ggsave(ShoeYN, filename = paste0(workingfolder, '/ReportPlots/ShoeYN.png'), scale = 1, width = 6, height = 3)
+
+```
+
+#### Model Building
+For each model, the following steps need to occur:
+
+1. Create dataset by combining predictor dataset with the perception variable of interest.
+2. Split data into training and validation sets using an 80:20 split - splitting data so that proportions are maintained in training and validation sets. Training set will be used to build each model while validation set is used for final validation.
+3. Use the "train" function within the *caret* package to build the models.
+4. Predict outcome values from the validation set using the final model from previous step.
+5. Create a confusion matrix to show the performance of the model.
+6. Plot the variable importance rankings.
+
+Degree of Satisfaction and Overal Satisfaction models using the 7 point and 3 point scales (respectively) will be built using an ordinal random forest model (from *ordinalForest* package). The Yes/No purchase model is built using a basic random forest. All 3 models will also be built using logistic regression as well.
+
+```{r random forests, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+
+#run ordinal forest on degree of satisfaction
+RF.DS.Data = cbind(RF.MechPredictorData, Pcpn$Overall)
+names(RF.DS.Data)[length(RF.DS.Data)] = 'OverallRating'
+
+RF.DS = RF.DS.Data[RF.MechPred.noNAs, ]
+
+RF.DS.train = RF.DS[RF.train.samples,]
+RF.DS.test = RF.DS[-RF.train.samples,]
+
+RF.DS.model = train(OverallRating~.,
+                      data = RF.DS.train,
+                      method = "ordinalRF",
+                      trControl = modControl,
+                      tuneGrid = ORFgrid)
+new.RF.DS = predict(RF.DS.model, RF.DS.test)
+RF.DS.CM = confusionMatrix(new.RF.DS, RF.DS.test$OverallRating)
+plot(varImp(RF.DS.model))
+
+#run ordinal forest on overall satisfaction (3-pt scale) with LR and TTP removed
+
+RF.OS.Data = cbind(RF.MechPredictorData, Pcpn$Satisfied)
+names(RF.OS.Data)[length(RF.OS.Data)] = 'OverallTransformed'
+
+RF.OS = RF.OS.Data[RF.MechPred.noNAs, ]
+
+RF.OS.train = RF.OS[RF.train.samples,]
+RF.OS.test = RF.OS[-RF.train.samples,]
+
+RF.OS.model = train(OverallTransformed~.,
+                      data = RF.OS.train,
+                      method = "ordinalRF",
+                      trControl = modControl,
+                      tuneGrid = ORFgrid)
+new.RF.OS = predict(RF.OS.model, RF.OS.test)
+RF.OS.CM = confusionMatrix(new.RF.OS, RF.OS.test$OverallTransformed)
+plot(varImp(RF.OS.model))
+
+#run random forest on willingness-to-purchase with LR and TTP removed
+
+RF.WtP.Data = cbind(RF.MechPredictorData, Pcpn[,11])
+names(RF.WtP.Data)[length(RF.WtP.Data)] = 'OverallYN'
+
+RF.WtP = RF.WtP.Data[RF.MechPred.noNAs, ]
+
+RF.WtP.train = RF.WtP[RF.train.samples,]
+RF.WtP.test = RF.WtP[-RF.train.samples,]
+
+RF.WtP.model = train(OverallYN~.,
+                      data = RF.WtP.train,
+                      method = "rf",
+                      trControl = modControl,
+                      tuneGrid = RFgrid)
+new.RF.WtP = predict(RF.WtP.model, RF.WtP.test)
+RF.WtP.CM = confusionMatrix(new.RF.WtP, RF.WtP.test$OverallYN)
+plot(varImp(RF.WtP.model))
+```
+
+Next, we'll run the elastic net logistic regression models.  First we'll reset the seed and then create the test/train splits. Then we'll center and scale the data so variables on larger scales aren't skewing results.
+
+
+```{r function, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+
+checkfactor = function(mydata){
+  factorvector = NULL
+
+  for (i in 1:ncol(mydata)){
+
+    factorvector[i] = is.numeric(mydata[,i])
+
+  }
+
+  return(factorvector)
+}
+
+num.vector = checkfactor(LR.MechPredictorData)
+proc.LR.MechPredictorData = LR.MechPredictorData
+proc.LR.MechPredictorData[,num.vector] = predict(preProcess(
+  LR.MechPredictorData[,num.vector], 
+  method = c("center", "scale")), 
+  LR.MechPredictorData[,num.vector])
+
+```
+
+```{r elastic net, echo = TRUE, warning = FALSE, eval = FALSE, message = FALSE}
+
+#run logistic regression on degree of satisfaction (7-pt scale) model
+LR.DS.Data = cbind(proc.LR.MechPredictorData, newPcpn$Overall)
+names(LR.DS.Data)[length(LR.DS.Data)] = 'OverallRating'
+
+LR.DS = LR.DS.Data[LR.MechPred.noNAs, ]
+
+LR.DS.train = LR.DS[LR.train.samples,]
+LR.DS.test = LR.DS[-LR.train.samples,]
+
+LR.DS.model = train(OverallRating~.,
+                                  data = LR.DS.train,
+                                  method = "glmnet",
+                                  trControl = modControl,
+                                  tuneLength = 10)
+
+new.LR.DS = predict(LR.DS.model, LR.DS.test)
+LR.DS.CM = confusionMatrix(new.LR.DS, LR.DS.test$OverallRating)
+LR.DS.model.bestTune = LR.DS.model$bestTune
+
+
+#run logistic regression with overall satisfaction (3-pt scale) model
+LR.OS.Data = cbind(proc.LR.MechPredictorData, newPcpn$Satisfied)
+names(LR.OS.Data)[length(LR.OS.Data)] = 'OverallTransformed'
+
+LR.OS = LR.OS.Data[LR.MechPred.noNAs, ]
+
+LR.OS.train = LR.OS[LR.train.samples,]
+LR.OS.test = LR.OS[-LR.train.samples,]
+
+LR.OS.model = train(OverallTransformed~.,
+                                data = LR.OS.train,
+                                method = "glmnet",
+                                trControl = modControl,
+                                tuneLength = 10)
+
+new.LR.OS = predict(LR.OS.model, LR.OS.test) 
+LR.OS.CM = confusionMatrix(new.LR.OS, LR.OS.test$OverallTransformed) 
+LR.OS.model.bestTune = LR.OS.model$bestTune
+
+
+#run logistic regression for willingess-to-purchase model
+LR.WtP.Data = cbind(proc.LR.MechPredictorData, newPcpn$OverallYN)
+names(LR.WtP.Data)[length(LR.WtP.Data)] = 'OverallYN'
+
+LR.WtP = LR.WtP.Data[LR.MechPred.noNAs, ]
+
+LR.WtP.train = LR.WtP[LR.train.samples,]
+LR.WtP.test = LR.WtP[-LR.train.samples,]
+
+
+LR.WtP.model = train(OverallYN~.,
+                     data = LR.WtP.train,
+                     method = "glmnet",
+                     trControl = modControl,
+                     tuneLength = 10)                     
+
+new.LR.WtP = predict(LR.WtP.model, LR.WtP.test)
+LR.WtP.CM = confusionMatrix(new.LR.WtP, LR.WtP.test$OverallYN)
+LR.WtP.bestTune = LR.WtP.model$bestTune
+coef(LR.WtP.model$finalModel, LR.WtP.model$bestTune$lambda)
+plot(varImp(LR.WtP.model))
+
+```
+
+
+
+
